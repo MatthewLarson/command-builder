@@ -1,0 +1,30 @@
+name: git
+description: Distributed version control system
+subcommands:
+  - name: commit
+    description: Record changes to the repository
+    flags:
+      - name: -m
+        description: Commit message
+        type: string
+      - name: --amend
+        description: Amend the previous commit
+        type: bool
+  - name: push
+    description: Update remote refs along with associated objects
+    flags:
+      - name: --force
+        description: Force push
+        type: bool
+  - name: pull
+    description: Fetch from and integrate with another repository or a local branch
+    flags:
+      - name: --rebase
+        description: Rebase the current branch on top of the upstream
+        type: bool
+  - name: status
+    description: Show the working tree status
+    flags:
+      - name: --short
+        description: Give the output in the short-format
+        type: bool

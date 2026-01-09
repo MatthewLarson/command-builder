@@ -24,8 +24,10 @@ install:
 package:
 	@echo "Packaging for Debian..."
 	@mkdir -p dist/usr/bin
+	@mkdir -p dist/usr/share/command-builder
 	@mkdir -p dist/DEBIAN
 	@cp packaging/debian/control dist/DEBIAN/
+	@cp scripts/cb.bash dist/usr/share/command-builder/
 	@go build -o dist/usr/bin/$(BINARY_NAME) cmd/cb/main.go
 	@chmod 755 dist/usr/bin/$(BINARY_NAME)
 	@dpkg-deb --build dist command-builder.deb

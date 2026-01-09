@@ -1,14 +1,16 @@
 package main
 
 import (
-	"fmt"
-	"os"
-	"strings"
-
 	"command-builder/internal/definitions"
 	"command-builder/internal/registry"
 	"command-builder/internal/scraper"
 	"command-builder/internal/state"
+	"fmt"
+	"os"
+	"strings"
+	"text/tabwriter"
+
+	"golang.org/x/term"
 )
 
 func main() {
@@ -104,50 +106,203 @@ func handleLs(st *state.State) {
 	}
 
 	if len(st.CommandParts) == 0 {
-		fmt.Println("Available commands (definitions found):")
-		names, err := defMgr.ListDefinitions()
-		if err != nil {
-			fmt.Printf("  Error listing definitions: %v\n", err)
-			return
-		}
-		if len(names) == 0 {
-			fmt.Println("  (none found in local cache)")
-		}
-		for _, name := range names {
-			fmt.Printf("  %s\n", name)
-		}
+		printLocalDefinitions(defMgr)
 		return
 	}
 
 	rootCmdName := st.CommandParts[0]
 	def, err := ensureDefinition(rootCmdName, defMgr)
 	if err != nil {
-		fmt.Printf("No definition found for '%s' (checked local, registry, and scraper).\n", rootCmdName)
+		fmt.Printf("No definition found for '%s'.\n", rootCmdName)
 		return
 	}
 
+	// Navigate to the correct context
+	var flags []definitions.Flag
 	var subcommands []definitions.Subcommand
+	var args []definitions.Argument
 
-	if len(st.CommandParts) == 1 {
-		subcommands = def.Subcommands
-	} else {
-		path := st.CommandParts[1:]
-		currentSub := def.FindSubcommand(path)
-		if currentSub == nil {
-			fmt.Println("Current context not found in definition.")
-			return
+	// Default context is root
+	flags = def.Flags
+	subcommands = def.Subcommands
+	args = def.Args
+
+	// Traverse path
+	// If the last part is an option (starts with -), use the PARENT context
+	// If the last part is a subcommand, use THAT context.
+
+	validPath := st.CommandParts[1:]
+
+	// Check if last part is a flag
+	if len(validPath) > 0 {
+		last := validPath[len(validPath)-1]
+		if strings.HasPrefix(last, "-") {
+			// User just typed a flag. They might be looking for a value for it,
+			// OR they are done with it and want to see what else they can do.
+			// Revert to parent context (remove the flag) to show available options again.
+			// But specialized logic: "Can have a string... optional/required"
+			// Since we don't have per-flag value definitions yet, we will just show parent context
+			// effectively ignoring the dangling flag for 'ls' purposes,
+			// UNLESS we implement precise flag arg detection later.
+			// For now: pop the flag from path
+			validPath = validPath[:len(validPath)-1]
 		}
-		subcommands = currentSub.Subcommands
 	}
 
-	if len(subcommands) == 0 {
-		fmt.Println("No subcommands available.")
+	// Re-traverse with cleaned path
+	if len(validPath) > 0 {
+		currentSub := def.FindSubcommand(validPath)
+		if currentSub != nil {
+			flags = currentSub.Flags
+			subcommands = currentSub.Subcommands
+			args = currentSub.Args
+		} else {
+			// If we can't find the exact subcommand (maybe it's a positional arg value?),
+			// we stick to what we found furthest down or root.
+			// Simplified: if exact match fails, maybe it's just args.
+			// For now, let's assume if FindSubcommand returns nil for a partial path,
+			// it might mean we are "inside" an argument.
+			// But FindSubcommand is strict.
+			// Let's rely on the previous logic: if exact match fails, we might just be at root or
+			// an intermediate point.
+			// NOTE: Improvement needed here for complex paths.
+		}
+	}
+
+	// Calculate max name length to determine description width
+	maxNameLen := 0
+
+	// Helper to check length
+	updateMax := func(name string) {
+		if len(name) > maxNameLen {
+			maxNameLen = len(name)
+		}
+	}
+
+	for _, arg := range args {
+		updateMax(arg.Name)
+	}
+	for _, sub := range subcommands {
+		updateMax(sub.Name)
+	}
+	for _, f := range flags {
+		updateMax(f.Name)
+	}
+
+	// Get terminal width
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		width = 80 // fallback
+	}
+
+	// Calculate available width for description
+	// Padding (4 spaces) + Tab + Indent (~2)
+	// Let's aim safely: Width - (MaxNameLen + 8)
+	descWidth := width - (maxNameLen + 8)
+	if descWidth < 20 {
+		descWidth = 20 // minimum readable width
+	}
+
+	// Setup TabWriter with padding=4 for "extra tab away" feel
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 4, ' ', 0)
+
+	hasOutput := false
+
+	// Helper to print arguments/items with wrapping
+	printItem := func(name, desc string, extras ...string) {
+		fullDesc := desc
+		if len(extras) > 0 {
+			fullDesc += " " + extras[0]
+		}
+
+		lines := wrapString(fullDesc, descWidth)
+		if len(lines) == 0 {
+			lines = []string{""}
+		}
+
+		// First line
+		fmt.Fprintf(w, "  %s\t%s\n", name, lines[0])
+
+		// Subsequent lines
+		for _, line := range lines[1:] {
+			fmt.Fprintf(w, "  \t%s\n", line)
+		}
+	}
+
+	// 1. Arguments
+	if len(args) > 0 {
+		fmt.Fprintln(w, "Arguments:")
+		for _, arg := range args {
+			reqStr := "(Optional)"
+			if arg.Required {
+				reqStr = "(Required)"
+			}
+			printItem(arg.Name, arg.Description, reqStr)
+		}
+		fmt.Fprintln(w, "")
+		hasOutput = true
+	}
+
+	// 2. Subcommands
+	if len(subcommands) > 0 {
+		fmt.Fprintln(w, "Subcommands:")
+		for _, sub := range subcommands {
+			printItem(sub.Name, sub.Description)
+		}
+		fmt.Fprintln(w, "")
+		hasOutput = true
+	}
+
+	// 3. Options
+	if len(flags) > 0 {
+		fmt.Fprintln(w, "Options:")
+		for _, f := range flags {
+			printItem(f.Name, f.Description)
+		}
+		hasOutput = true
+	}
+
+	if !hasOutput {
+		fmt.Println("No further options or subcommands available.")
+	} else {
+		w.Flush()
+	}
+}
+
+func printLocalDefinitions(defMgr *definitions.Manager) {
+	fmt.Println("Available commands (definitions found):")
+	names, err := defMgr.ListDefinitions()
+	if err != nil {
+		fmt.Printf("  Error listing definitions: %v\n", err)
 		return
 	}
-
-	for _, sub := range subcommands {
-		fmt.Printf("  %s\t%s\n", sub.Name, sub.Description)
+	if len(names) == 0 {
+		fmt.Println("  (none found in local cache)")
 	}
+	for _, name := range names {
+		fmt.Printf("  %s\n", name)
+	}
+}
+
+// wrapString splits a string into lines no longer than maxWidth, breaking at words.
+func wrapString(s string, maxWidth int) []string {
+	var lines []string
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return lines
+	}
+
+	currentLine := words[0]
+	for _, word := range words[1:] {
+		if len(currentLine)+1+len(word) > maxWidth {
+			lines = append(lines, currentLine)
+			currentLine = word
+		} else {
+			currentLine += " " + word
+		}
+	}
+	lines = append(lines, currentLine)
+	return lines
 }
 
 func handleOp(st *state.State) {

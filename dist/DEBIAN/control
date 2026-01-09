@@ -1,0 +1,9 @@
+Package: command-builder
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Matthew Larson
+Description: Interactive command construction tool
+ Command Builder helps you construct complex CLI commands step-by-step
+ using a filesystem-navigation metaphor.

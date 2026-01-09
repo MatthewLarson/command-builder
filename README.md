@@ -17,7 +17,7 @@ make install
 To enable history integration (so `cb exec` adds the command to your shell history), add this to your `.bashrc` or `.zshrc`:
 
 ```bash
-source /path/to/command-builder/scripts/cb.bash
+source /usr/share/command-builder/cb.bash
 ```
 
 ## Usage

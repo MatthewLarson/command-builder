@@ -33,23 +33,35 @@ func NewScraper() (*Scraper, error) {
 
 // Scrape attempts to run `command --help` and parse it into a basic definition.
 func (s *Scraper) Scrape(commandName string) (*definitions.CommandDefinition, error) {
-	// 1. Run command --help
-	cmd := exec.Command(commandName, "--help")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	// Some commands print help to stderr
-	cmd.Stderr = &out
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to run %s --help: %w", commandName, err)
+	// 1. Run root command --help
+	out, err := runHelp(commandName)
+	if err != nil {
+		return nil, err
 	}
 
-	output := out.String()
-
 	// 2. Parse the output
-	def := parseHelpOutput(commandName, output)
+	def := parseHelpOutput(commandName, out)
 
-	// 3. Save to file
+	// 3. One level deep: scrape subcommands
+	// Limit to avoid infinite loops or massive execution time
+	for i := range def.Subcommands {
+		// e.g. "git clone"
+		subName := def.Subcommands[i].Name
+
+		fmt.Printf("Scraping subcommand: %s %s...\n", commandName, subName)
+
+		subOut, err := runHelp(commandName, subName)
+		if err == nil {
+			// Reuse parsing logic
+			subDef := parseHelpOutput(subName, subOut)
+			// Merge flags from parsed output into the subcommand struct
+			def.Subcommands[i].Flags = subDef.Flags
+			// Optionally merge nested sub-subcommands if we wanted to
+			// def.Subcommands[i].Subcommands = subDef.Subcommands
+		}
+	}
+
+	// 4. Save to file
 	if err := s.saveDefinition(def); err != nil {
 		return nil, err
 	}
@@ -57,30 +69,67 @@ func (s *Scraper) Scrape(commandName string) (*definitions.CommandDefinition, er
 	return def, nil
 }
 
+func runHelp(args ...string) (string, error) {
+	args = append(args, "--help")
+	cmd := exec.Command(args[0], args[1:]...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out // Some commands print help to stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to run %v: %w", args, err)
+	}
+	return out.String(), nil
+}
+
 func parseHelpOutput(name, text string) *definitions.CommandDefinition {
 	def := &definitions.CommandDefinition{
 		Name:        name,
 		Description: "Auto-generated from --help",
 		Flags:       []definitions.Flag{},
+		Subcommands: []definitions.Subcommand{},
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(text))
-	// Naive regex for flags: "  -f, --flag    Description"
-	// This is very specific to standard GNU style help
+
+	// Regex for flags: "  -f, --flag    Description" or "  --flag    Description"
 	flagRegex := regexp.MustCompile(`^\s+(-[a-zA-Z0-9],? )?(--[a-zA-Z0-9-]+)\s+(.*)$`)
+
+	// Regex for subcommands: "   command   Description"
+	// Assumes indented, starts with specific chars, followed by >1 space and description
+	subcmdRegex := regexp.MustCompile(`^\s+([a-zA-Z][a-zA-Z0-9-_]+)\s{2,}(.*)$`)
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		matches := flagRegex.FindStringSubmatch(line)
-		if len(matches) > 3 {
+
+		// Try matching flags
+		if matches := flagRegex.FindStringSubmatch(line); len(matches) > 3 {
 			// matches[2] is --flag
 			// matches[3] is description
 			f := definitions.Flag{
 				Name:        matches[2],
 				Description: matches[3],
-				Type:        "string", // Default assumption
+				Type:        "string",
 			}
 			def.Flags = append(def.Flags, f)
+			continue
+		}
+
+		// Try matching subcommands
+		// Filter out lines that look like flags or header text if possible
+		if matches := subcmdRegex.FindStringSubmatch(line); len(matches) > 2 {
+			cmdName := matches[1]
+			// Avoid common false positives in help text (e.g. "Usage:", "Options:")
+			low := strings.ToLower(cmdName)
+			if low == "usage:" || low == "options:" || low == "commands:" || low == "arguments:" {
+				continue
+			}
+
+			s := definitions.Subcommand{
+				Name:        cmdName,
+				Description: matches[2],
+			}
+			def.Subcommands = append(def.Subcommands, s)
 		}
 	}
 

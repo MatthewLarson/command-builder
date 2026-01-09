@@ -14,10 +14,18 @@ type Flag struct {
 	Type        string `yaml:"type,omitempty"` // e.g., "string", "bool"
 }
 
+// Argument represents a positional argument.
+type Argument struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Required    bool   `yaml:"required,omitempty"`
+}
+
 // Subcommand represents a nested command.
 type Subcommand struct {
 	Name        string       `yaml:"name"`
 	Description string       `yaml:"description"`
+	Args        []Argument   `yaml:"args,omitempty"`
 	Subcommands []Subcommand `yaml:"subcommands,omitempty"`
 	Flags       []Flag       `yaml:"flags,omitempty"`
 }
@@ -26,6 +34,7 @@ type Subcommand struct {
 type CommandDefinition struct {
 	Name        string       `yaml:"name"`
 	Description string       `yaml:"description"`
+	Args        []Argument   `yaml:"args,omitempty"`
 	Subcommands []Subcommand `yaml:"subcommands,omitempty"`
 	Flags       []Flag       `yaml:"flags,omitempty"`
 }
